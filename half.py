@@ -1,38 +1,47 @@
-import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-import numpy as np
-from adversary_model import GetCHatPrime
 
-def Half(W_pas,W_act,Y_train, y_train, Y_test, b, ):
-    k = 2
-    d = 5
 
-    J = np.array([
-        [-1, 1]
-    ])
+def Half(W_pas, W_act, Y_test, c_hat_prime, b):
 
-    A = J @ W_pas
+    d = W_pas.shape[0]
 
+    # Matriz A
+    A = W_pas.reshape(1, d)
+
+    # Pseudoinversa de A
     A_plus = np.linalg.pinv(A)
 
+    # Matriz identidade
     identity = np.eye(d)
 
+    # Vetor de 1s
     ones = np.ones(d)
 
-    X_hat = (
-        A_plus @ (
-            GetCHatPrime(Y_train, y_train, Y_test)
-            - J @ W_act @ Y_test[i]
-            - J @ b
-        )
-        +
-        0.5 * (
-            identity
-            - A_plus @ A
-        ) @ ones
+    # Termo projetado sobre o espaço nulo de A
+    null_space_term = (
+        0.5 *
+        (identity - A_plus @ A) @ ones
     )
 
-    return X_hat
+    X_hat = []
+
+    for i in range(len(Y_test)):
+
+        # Termo correspondente às features ativas
+        active_term = (
+            W_act @ Y_test[i]
+            + b
+        )
+
+        # Equação principal do Half*
+        x_hat_i = (
+            A_plus @ np.atleast_1d(
+                c_hat_prime[i]
+                - active_term
+            )
+            + null_space_term
+        )
+
+        X_hat.append(x_hat_i)
+
+    return np.array(X_hat)

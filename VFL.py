@@ -37,7 +37,6 @@ def target_mean_encode(df, column, target):
     return df[column].map(means)
 
 categorical_features = [
-    "age",
     "job",
     "marital",
     "education",
@@ -47,10 +46,14 @@ categorical_features = [
     "contact",
     "month",
     "day_of_week",
+    "poutcome"
+]
+
+numerical_features = [
+    "age",
     "campaign",
     "pdays",
     "previous",
-    "poutcome",
     "emp.var.rate",
     "cons.price.idx",
     "cons.conf.idx",
@@ -58,14 +61,29 @@ categorical_features = [
     "nr.employed"
 ]
 
+# ============================================================
+# TARGET MEAN ENCODING
+# ============================================================
+
+def target_mean_encode(df, column, target):
+
+    means = df.groupby(column)[target].mean()
+
+    return df[column].map(means)
+
+
 for col in categorical_features:
+
     X[col] = target_mean_encode(
         df,
         col,
         "y"
     )
 
-# print(X.head())
+
+# ============================================================
+# NORMALIZATION
+# ============================================================
 
 scaler = MinMaxScaler()
 
@@ -76,10 +94,17 @@ X_scaled = pd.DataFrame(
     columns=X.columns
 )
 
+
+# ============================================================
+# ACTIVE / PASSIVE PARTITION
+# ============================================================
+
 active_features = X_scaled.columns[:14]
+
 passive_features = X_scaled.columns[14:]
 
 Y = X_scaled[active_features].values
+
 X_passive = X_scaled[passive_features].values
 
 # print(Y.shape)
@@ -106,6 +131,9 @@ y_train, y_test = train_test_split(
     random_state=42,
     stratify=y_train_pred
 )
+# ============================================================
+# VFL
+# ============================================================
 
 VFL = LogisticRegression(
     C=np.inf,
@@ -121,10 +149,15 @@ c = VFL.predict_proba(
     np.hstack([Y_test, X_test])
 )
 
+
+# ============================================================
+# ADVERSARY MODEL
+# ============================================================
+
 AM = LogisticRegression(
-        C=np.inf,
-        max_iter=1000
-    )
+    C=np.inf,
+    max_iter=1000
+)
 
 AM.fit(
     Y_train,
@@ -133,14 +166,10 @@ AM.fit(
 
 c_hat = AM.predict_proba(Y_test)
 
-# for i in range (5):
-#     c_hat_p0 = c_hat[i][0]
-#     c_hat_p1 = c_hat[i][1]
-#     print(f"c_hat_P(0) = {c_hat_p0}, c_hat_P(1) = {c_hat_p1}")
 
-#     c_p0 = c[i][0]
-#     c_p1 = c[i][1]
-#     print(f"c_P(0) = {c_p0}, c_P(1) = {c_p1}")
+# ============================================================
+# PERFORMANCE
+# ============================================================
 
 vfl_pred = VFL.predict(
     np.hstack([Y_test, X_test])
@@ -163,4 +192,157 @@ score_mse = mean_squared_error(
     c_hat[:, 1]
 )
 
-print("Confidence-score MSE:", score_mse)
+print(
+    "Confidence-score MSE:",
+    score_mse
+)
+
+
+# ============================================================
+# EXTRACT VFL PARAMETERS
+# ============================================================
+
+W = VFL.coef_[0]
+
+W_act = W[:14]
+W_pas = W[14:]
+
+b = VFL.intercept_[0]
+
+
+# ============================================================
+# c_hat'
+# ============================================================
+
+eps = 1e-12
+
+c_hat_clipped = np.clip(
+    c_hat,
+    eps,
+    1 - eps
+)
+
+c_hat_prime = np.log(
+    c_hat_clipped[:, 1] /
+    c_hat_clipped[:, 0]
+)
+
+
+# ============================================================
+# HALF*
+# ============================================================
+
+X_hat = Half(
+    W_pas,
+    W_act,
+    Y_test,
+    c_hat_prime,
+    b
+)
+
+
+# ============================================================
+# ATTACK EVALUATION
+# ============================================================
+
+attack_mse = np.mean(
+    (X_test - X_hat) ** 2
+)
+
+print(
+    "Half* reconstruction MSE:",
+    attack_mse
+)
+
+
+mse_per_feature = np.mean(
+    (X_test - X_hat) ** 2,
+    axis=0
+)
+
+print("\nMSE per passive feature:")
+
+for feature, mse in zip(
+    passive_features,
+    mse_per_feature
+):
+    print(
+        f"{feature}: {mse}"
+    )
+
+
+# ==============================================
+# TESTE
+# ==============================================
+c_prime = np.log(
+    c[:, 1] / c[:, 0]
+)
+
+X_hat_real_score = Half(
+    W_pas,
+    W_act,
+    Y_test,
+    c_prime,
+    b
+)
+
+mse_real_score = np.mean(
+    (X_test - X_hat_real_score) ** 2
+)
+
+print(
+    "Half* MSE using REAL c:",
+    mse_real_score
+)
+
+
+print("W_act.shape: ", W_act.shape)
+print("W_pas.shape: ", W_pas.shape)
+print("X_test.shape: ", X_test.shape)
+print("X_hat.shape: ", X_hat.shape)
+
+
+# ============================================================
+# VALIDATION USING DIRECT VFL LOGIT
+# ============================================================
+
+z_real = VFL.decision_function(
+    np.hstack([Y_test, X_test])
+)
+
+X_hat_z = Half(
+    W_pas,
+    W_act,
+    Y_test,
+    z_real,
+    b
+)
+
+mse_z = np.mean(
+    (X_test - X_hat_z) ** 2
+)
+
+print(
+    "Half* MSE using real VFL logit:",
+    mse_z
+)
+
+z_manual = (
+    Y_test @ W_act
+    +
+    X_test @ W_pas
+    +
+    b
+)
+
+print(
+    "Logit reconstruction error:",
+    np.max(
+        np.abs(z_real - z_manual)
+    )
+)
+
+print("X.dtypes: ", X.dtypes)
+print("X.shape: ", X.shape)
+print("X_scaled.min(): ", X_scaled.min())
+print("X_scaled.max(): ",X_scaled.max())

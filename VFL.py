@@ -32,9 +32,6 @@ y = df["y"]
 # print(y.shape)
 # print(y.head())
 
-def target_mean_encode(df, column, target):
-    means = df.groupby(column)[target].mean()
-    return df[column].map(means)
 
 categorical_features = [
     "job",
@@ -66,14 +63,11 @@ numerical_features = [
 # ============================================================
 
 def target_mean_encode(df, column, target):
-
     means = df.groupby(column)[target].mean()
-
     return df[column].map(means)
 
 
 for col in categorical_features:
-
     X[col] = target_mean_encode(
         df,
         col,
@@ -342,7 +336,7 @@ print(
     )
 )
 
-print("X.dtypes: ", X.dtypes)
-print("X.shape: ", X.shape)
-print("X_scaled.min(): ", X_scaled.min())
-print("X_scaled.max(): ",X_scaled.max())
+# print("X.dtypes: ", X.dtypes)
+# print("X.shape: ", X.shape)
+# print("X_scaled.min(): ", X_scaled.min())
+# print("X_scaled.max(): ",X_scaled.max())

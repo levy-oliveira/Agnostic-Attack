@@ -50,12 +50,6 @@ df["y"] = df["y"].map({
 X = df.drop(columns=["y"])
 y = df["y"]
 
-# print(X.shape)
-# print(X.head())
-
-# print(y.shape)
-# print(y.head())
-
 
 categorical_features = [
     "job",
@@ -255,6 +249,7 @@ def run_attack_scenario(
         c_hat / (1 - c_hat)
     )
 
+    logit_mse = np.mean((z_real - z_hat) ** 2)
     # --------------------------------------------------
     # VFL weights
     # --------------------------------------------------
@@ -308,7 +303,12 @@ def run_attack_scenario(
         "confidence_mse": confidence_mse,
         "reconstruction_mse": reconstruction_mse,
         "real_c_mse": real_c_mse,
-        "feature_mse": feature_mse
+        "feature_mse": feature_mse,
+        "W_pas": W_pas.copy(),
+        "W_act": W_act.copy(),
+        "z_hat": z_hat.copy(),
+        "z_real": z_real.copy(),
+        "logit_mse": logit_mse,
     }
 
 
@@ -338,46 +338,22 @@ for scenario_id, scenario in enumerate(
     result["active_indices"] = active_indices
     result["passive_indices"] = passive_indices
 
+    result["passive_features"] = [
+        X_scaled.columns[i]
+        for i in passive_indices
+    ]
+
+    result["active_features"] = [
+        X_scaled.columns[i]
+        for i in active_indices
+    ]
+
     results.append(result)
 
     passive_names = [
         X_scaled.columns[i]
         for i in passive_indices
     ]
-
-    # print(
-    #     f"\nScenario {scenario_id}/19"
-    # )
-
-    # print(
-    #     "Passive:",
-    #     passive_names
-    # )
-
-    # print(
-    #     "VFL accuracy:",
-    #     result["vfl_accuracy"]
-    # )
-
-    # print(
-    #     "AM accuracy:",
-    #     result["am_accuracy"]
-    # )
-
-    # print(
-    #     "Confidence MSE:",
-    #     result["confidence_mse"]
-    # )
-
-    # print(
-    #     "Half* MSE:",
-    #     result["reconstruction_mse"]
-    # )
-
-    # print(
-    #     "Half* MSE using REAL c:",
-    #     result["real_c_mse"]
-    # )
 
 mse_values = [
     result["reconstruction_mse"]
@@ -397,19 +373,6 @@ mean_real_c_mse = np.mean(
     real_c_mse_values
 )
 
-# print("\n==============================")
-# print("FINAL RESULTS")
-# print("==============================")
-
-# print(
-#     "Mean Half* reconstruction MSE:",
-#     mean_mse
-# )
-
-# print(
-#     "Mean Half* MSE using REAL c:",
-#     mean_real_c_mse
-# )
 
 rows = []
 
@@ -432,9 +395,6 @@ for result in results:
 
 results_df = pd.DataFrame(rows)
 
-print("\n")
-print(results_df.to_string(index=False))
-
 results_df["attack_gap"] = (
     results_df["half_star_mse"]
     -
@@ -446,4 +406,297 @@ results_df["attack_gap_percent"] = (
     /
     results_df["half_star_real_c_mse"]
     * 100
+)
+
+# ============================================================
+# FEATURE-LEVEL RESULTS
+# ============================================================
+
+feature_rows = []
+
+for result in results:
+
+    passive_features = result["passive_features"]
+    feature_mse = result["feature_mse"]
+    W_pas = result["W_pas"]
+    logit_mse = result["logit_mse"]
+
+    
+
+    for feature, mse, weight in zip(
+        passive_features,
+        feature_mse,
+        W_pas
+    ):
+        predicted_mse = logit_mse / (weight ** 2)
+
+        feature_rows.append({
+            "scenario": result["scenario"],
+            "feature": feature,
+            "weight": weight,
+            "abs_weight": abs(weight),
+            "feature_mse": mse,
+            "logit_mse": logit_mse,
+            "predicted_mse": predicted_mse
+        })
+
+##print("\n")
+#print("==============================")
+#print("FEATURE-LEVEL RESULTS")
+#print("==============================")
+
+feature_df = pd.DataFrame(feature_rows)
+#print(
+#     feature_df.to_string(index=False)
+# )
+
+
+
+#print("\n")
+#print("==============================")
+#print("FEATURE SUMMARY")
+#print("==============================")
+
+feature_summary = (
+    feature_df
+    .groupby("feature")
+    .agg(
+        mean_mse=("feature_mse", "mean"),
+        std_mse=("feature_mse", "std"),
+        mean_abs_weight=("abs_weight", "mean"),
+        std_abs_weight=("abs_weight", "std")
+    )
+    .sort_values("mean_mse", ascending=False)
+)
+
+#print(
+#     feature_summary.to_string()
+# )
+
+# ============================================================
+# CORRELATION ANALYSIS
+# ============================================================
+
+confidence_half_corr = results_df[
+    "confidence_mse"
+].corr(
+    results_df["half_star_mse"]
+)
+
+#print("\n")
+#print("==============================")
+#print("CONFIDENCE MSE x HALF* MSE")
+#print("==============================")
+
+#print(
+#     "Correlation:",
+#     confidence_half_corr
+# )
+
+
+feature_correlation = X_scaled.corr()
+
+#print("\n")
+#print("==============================")
+#print("FEATURE CORRELATION")
+#print("==============================")
+
+#print(
+    # feature_correlation.to_string()
+# )
+
+
+# ============================================================
+# ACTIVE-PASSIVE CORRELATION ANALYSIS
+# ============================================================
+
+correlation_rows = []
+
+corr_matrix = X_scaled.corr()
+
+for result in results:
+
+    active_features = result["active_features"]
+    passive_features = result["passive_features"]
+
+    feature_mse = result["feature_mse"]
+
+    for feature, mse in zip(
+        passive_features,
+        feature_mse
+    ):
+
+        correlations = corr_matrix.loc[
+            feature,
+            active_features
+        ].abs()
+
+        max_corr = correlations.max()
+        mean_corr = correlations.mean()
+
+        correlation_rows.append({
+            "scenario": result["scenario"],
+            "feature": feature,
+            "max_active_corr": max_corr,
+            "mean_active_corr": mean_corr,
+            "feature_mse": mse
+        })
+
+correlation_df = pd.DataFrame(
+    correlation_rows
+)
+
+# print("\n")
+# print("==============================")
+# print("ACTIVE-PASSIVE CORRELATION")
+# print("==============================")
+
+# print(
+#     correlation_df.to_string(index=False)
+# )
+
+# print("\n")
+# print("==============================")
+# print("CORRELATION SUMMARY")
+# print("==============================")
+
+correlation_summary = (
+    correlation_df
+    .groupby("feature")
+    .agg(
+        mean_mse=("feature_mse", "mean"),
+        mean_max_corr=("max_active_corr", "mean"),
+        std_max_corr=("max_active_corr", "std"),
+        mean_active_corr=("mean_active_corr", "mean")
+    )
+    .sort_values(
+        "mean_mse",
+        ascending=False
+    )
+)
+
+# print(
+#     correlation_summary.to_string()
+# )
+
+corr_mse = correlation_df[
+    ["max_active_corr", "feature_mse"]
+].corr()
+
+# print("\n")
+# print("==============================")
+# print("ACTIVE CORRELATION x MSE")
+# print("==============================")
+
+# print(corr_mse)
+
+# print(
+#     "\nCorrelation max_active_corr x feature_mse:",
+#     correlation_df["max_active_corr"].corr(
+#         correlation_df["feature_mse"]
+#     )
+# )
+
+
+# print("\n==============================")
+# print("WEIGHT SENSITIVITY x MSE")
+# print("==============================")
+
+feature_df["inv_abs_weight"] = 1 / feature_df["abs_weight"]
+feature_df["inv_weight_sq"] = 1 / (feature_df["abs_weight"] ** 2)
+
+
+# print(
+#     feature_df[
+#         ["inv_abs_weight", "feature_mse"]
+#     ].corr()
+# )
+
+# print(
+#     feature_df[
+#         ["logit_mse", "predicted_mse", "feature_mse"]
+#     ].corr()
+# )
+# print(
+#     "Correlation 1/|W| x MSE:",
+#     feature_df["inv_abs_weight"].corr(
+#         feature_df["feature_mse"]
+#     )
+# )
+
+# print(
+#     "Correlation 1/W² x MSE:",
+#     feature_df["inv_weight_sq"].corr(
+#         feature_df["feature_mse"]
+#     )
+# )
+
+# print(
+#     "Correlation predicted_mse x feature_mse:",
+#     feature_df["predicted_mse"].corr(
+#         feature_df["feature_mse"]
+#     )
+# )
+
+feature_variance = X_scaled.var()
+
+feature_df["feature_variance"] = (
+    feature_df["feature"]
+    .map(feature_variance)
+)
+
+feature_df["relative_mse"] = (
+    feature_df["feature_mse"] /
+    feature_df["feature_variance"]
+)
+
+# print(
+#     feature_df[
+#         [
+#             "feature",
+#             "feature_mse",
+#             "feature_variance",
+#             "relative_mse"
+#         ]
+#     ].sort_values(
+#         "relative_mse",
+#         ascending=False
+#     )
+# )
+
+# print(
+#     "Correlation variance x MSE:",
+#     feature_df["feature_variance"].corr(
+#         feature_df["feature_mse"]
+#     )
+# )
+
+# print(
+#     "Correlation variance x relative MSE:",
+#     feature_df["feature_variance"].corr(
+#         feature_df["relative_mse"]
+#     )
+# )
+
+feature_df["std"] = np.sqrt(
+    feature_df["feature_variance"]
+)
+
+feature_df["nrmse"] = (
+    np.sqrt(feature_df["feature_mse"]) /
+    feature_df["std"]
+)
+
+print(
+    "Correlation std x feature_mse:",
+    feature_df["std"].corr(
+        feature_df["feature_mse"]
+    )
+)
+
+print(
+    "Correlation std x NRMSE:",
+    feature_df["std"].corr(
+        feature_df["nrmse"]
+    )
 )

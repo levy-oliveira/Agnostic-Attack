@@ -1,25 +1,16 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from pathlib import Path
-
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-
-from vfl_model import (
-    train_vfl_model,
-    predict_confidence as vfl_predict_confidence,
-    predict as vfl_predict,
-    get_weights,
-)
+from sklearn.linear_model import LogisticRegression
+from half import Half
+from datetime import datetime
+from pathlib import Path
 from adversary_model import (
     train_adversary_model,
-    predict_confidence as am_predict_confidence,
-    predict as am_predict,
+    predict_confidence,
+    predict
 )
-from half import Half
-from logit import probability_to_logit
-from metrics import mean_squared_error, feature_mean_squared_error
 
 
 def generate_feature_scenarios(features, passive_size=5):
@@ -65,11 +56,11 @@ def run_attack_scenario(
     # First split: hold out the final prediction set.
     (
         Y_train_pred,
-        _Y_prediction,
+        Y_prediction,
         X_train_pred,
-        _X_prediction,
+        X_prediction,
         y_train_pred,
-        _y_prediction
+        y_prediction
     ) = train_test_split(
         Y,
         X_passive,
@@ -97,34 +88,49 @@ def run_attack_scenario(
     )
 
     # VFL model.
-    vfl_model = train_vfl_model(Y_train, X_train, y_train)
+    vfl_model = LogisticRegression(max_iter=1000)
 
-    vfl_pred = vfl_predict(vfl_model, Y_test, X_test)
-    vfl_accuracy = np.mean(vfl_pred == y_test)
+    vfl_model.fit(
+        np.hstack([Y_train, X_train]),
+        y_train
+    )
+
+    vfl_accuracy = vfl_model.score(
+        np.hstack([Y_test, X_test]),
+        y_test
+    )
 
     # Adversary Model (AM).
-    am_model = train_adversary_model(Y_train, y_train)
+    am_model = LogisticRegression(max_iter=1000)
 
-    am_pred = am_predict(am_model, Y_test)
-    am_accuracy = np.mean(am_pred == y_test)
+    am_model.fit(Y_train, y_train)
+
+    am_accuracy = am_model.score(Y_test, y_test)
 
     # Confidence scores.
-    c_real = vfl_predict_confidence(vfl_model, Y_test, X_test)
-    c_hat = am_predict_confidence(am_model, Y_test)
+    c_real = vfl_model.predict_proba(
+        np.hstack([Y_test, X_test])
+    )[:, 1]
 
-    confidence_mse = mean_squared_error(c_real, c_hat)
+    c_hat = am_model.predict_proba(Y_test)[:, 1]
+
+    confidence_mse = np.mean((c_real - c_hat) ** 2)
 
     # Convert probabilities to logits.
-    z_real = probability_to_logit(c_real)
-    z_hat = probability_to_logit(c_hat)
+    c_real = np.clip(c_real, 1e-15, 1 - 1e-15)
+    c_hat = np.clip(c_hat, 1e-15, 1 - 1e-15)
 
-    logit_mse = mean_squared_error(z_real, z_hat)
+    z_real = np.log(c_real / (1 - c_real))
+    z_hat = np.log(c_hat / (1 - c_hat))
+
+    logit_mse = np.mean((z_real - z_hat) ** 2)
 
     # VFL weights.
-    W_act, W_pas, bias = get_weights(
-        vfl_model,
-        len(active_indices)
-    )
+    weights = vfl_model.coef_[0]
+    bias = vfl_model.intercept_[0]
+
+    W_act = weights[:len(active_indices)]
+    W_pas = weights[len(active_indices):]
 
     # Half* reconstruction using the adversary-estimated logit.
     X_hat = Half(
@@ -135,8 +141,12 @@ def run_attack_scenario(
         bias
     )
 
-    reconstruction_mse = mean_squared_error(X_test, X_hat)
-    feature_mse = feature_mean_squared_error(X_test, X_hat)
+    reconstruction_mse = np.mean((X_test - X_hat) ** 2)
+
+    feature_mse = np.mean(
+        (X_test - X_hat) ** 2,
+        axis=0
+    )
 
     # Oracle reconstruction using the real VFL logit.
     X_hat_real = Half(
@@ -147,7 +157,7 @@ def run_attack_scenario(
         bias
     )
 
-    real_c_mse = mean_squared_error(X_test, X_hat_real)
+    real_c_mse = np.mean((X_test - X_hat_real) ** 2)
 
     return {
         "vfl_accuracy": vfl_accuracy,
@@ -299,18 +309,14 @@ for result in results:
 
 results_df = pd.DataFrame(rows)
 
-# Save each execution with a unique timestamp.
 results_dir = Path("results")
 results_dir.mkdir(exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 csv_path = results_dir / f"attack_results_{timestamp}.csv"
 
-results_df.to_csv(
-    csv_path,
-    index=False,
-    encoding="utf-8-sig",
-    float_format="%.4f"
-)
+results_df = results_df.round(4)
 
-print(f"Results saved to: {csv_path}")
+results_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+print(f"Resultados salvos em: {csv_path}")

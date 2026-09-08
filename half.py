@@ -5,43 +5,38 @@ def Half(W_pas, W_act, Y_test, c_hat_prime, b):
 
     d = W_pas.shape[0]
 
-    # Matriz A
+    # W_pas como matriz linha
     A = W_pas.reshape(1, d)
 
-    # Pseudoinversa de A
+    # Pseudoinversa de Moore-Penrose
     A_plus = np.linalg.pinv(A)
 
-    # Matriz identidade
-    identity = np.eye(d)
+    # Projeção sobre o espaço nulo de A
+    null_space_projection = (
+        np.eye(d) - A_plus @ A
+    )
 
-    # Vetor de 1s
-    ones = np.ones(d)
-
-    # Termo projetado sobre o espaço nulo de A
+    # Termo Half*
     null_space_term = (
-        0.5 *
-        (identity - A_plus @ A) @ ones
+        0.5 * null_space_projection @ np.ones(d)
     )
 
     X_hat = []
 
     for i in range(len(Y_test)):
 
-        # Termo correspondente às features ativas
-        active_term = (
-            W_act @ Y_test[i]
-            + b
-        )
+        # Contribuição das features ativas
+        active_term = W_act @ Y_test[i] + b
 
-        # Equação principal do Half*
+        # Parte atribuída às features passivas
+        passive_logit = c_hat_prime[i] - active_term
+
+        # Reconstrução Half*
         x_hat_i = (
-            A_plus @ np.atleast_1d(
-                c_hat_prime[i]
-                - active_term
-            )
+            A_plus @ np.atleast_1d(passive_logit)
             + null_space_term
         )
 
         X_hat.append(x_hat_i)
 
-    return np.array(X_hat)
+    return np.asarray(X_hat)
